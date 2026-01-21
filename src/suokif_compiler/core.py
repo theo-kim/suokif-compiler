@@ -2,7 +2,8 @@ import re
 from typing import List, Optional
 from .ast import (
     ASTNode, Value, Symbol, Variable, Expression, String, Number, Boolean,
-    Operator, Conditional, Biconditional, And, Or, Not, Exists
+    Operator, Conditional, Biconditional, And, Or, Not, Exists, ForAll,
+    Eq
 )
 from .symbol_table import SymbolTable
 
@@ -14,7 +15,7 @@ class Compiler:
         self.ast: List[ASTNode] = []
         self.symbol_table = SymbolTable()
 
-    def compile(self, kif_string: str) -> str:
+    def compile(self, kif_string: str) -> List[ASTNode]:
         """
         Parses SUO-KIF string, builds AST and Symbol Table.
         
@@ -22,18 +23,30 @@ class Compiler:
             kif_string (str): The raw KIF data.
             
         Returns:
-            str: A string representation of the parsed AST.
+            List[ASTNode]: The list of parsed AST nodes.
         """
         if not kif_string:
             raise ValueError("Input cannot be empty")
         
         tokens = self._tokenize(kif_string)
-        self.ast = self._parse(tokens)
+        self.ast = self._parse(tokens, kif_string)
         self._build_symbol_table(self.ast)
         
-        return f"Compiled AST: {self.ast}"
+        return self.ast
 
-    def compile_file(self, file_path: str, start_line: int = 1, end_line: Optional[int] = None) -> str:
+    def find_symbol_usages(self, symbol_name: str) -> List[ASTNode]:
+        """
+        Finds all expressions containing the specified symbol.
+
+        Args:
+            symbol_name (str): The name of the symbol to find.
+
+        Returns:
+            List[ASTNode]: A list of AST nodes where the symbol appears.
+        """
+        return self.symbol_table.get_references(symbol_name)
+
+    def compile_file(self, file_path: str, start_line: int = 1, end_line: Optional[int] = None) -> List[ASTNode]:
         """
         Reads a SUO-KIF file and compiles it, optionally within a line range.
 
@@ -43,7 +56,7 @@ class Compiler:
             end_line (Optional[int]): The ending line number (1-based, inclusive).
 
         Returns:
-            str: The compiled output.
+            List[ASTNode]: The compiled output.
         """
         with open(file_path, 'r', encoding="utf-8") as f:
             lines = f.readlines()
@@ -52,27 +65,48 @@ class Compiler:
         subset = lines[start_idx:end_line] if end_line is not None else lines[start_idx:]
         return self.compile("".join(subset))
 
-    def _tokenize(self, text: str) -> List[str]:
-        """Tokenizes the input string into Lisp-like tokens."""
+    def _tokenize(self, text: str) -> List[tuple]:
+        """
+        Tokenizes the input string into Lisp-like tokens.
+        Returns a list of (token_text, start_index, end_index).
+        """
         token_pattern = re.compile(r';[^\n]*|"[^"]*"|\(|\)|[^\s()]+')
-        return [t for t in token_pattern.findall(text) if not t.startswith(';')]
+        tokens = []
+        for match in token_pattern.finditer(text):
+            token_text = match.group()
+            if not token_text.startswith(';'):
+                tokens.append((token_text, match.start(), match.end()))
+        return tokens
 
-    def _parse(self, tokens: List[str]) -> List[ASTNode]:
+    def _parse(self, tokens: List[tuple], original_text: str) -> List[ASTNode]:
         """Parses a list of tokens into a list of ASTNodes."""
         stack: List[List[ASTNode]] = [[]]
+        starts: List[int] = []  # Track start indices of open expressions
         
-        for token in tokens:
+        for token, start, end in tokens:
             if token == '(':
                 new_expr: List[ASTNode] = []
                 stack.append(new_expr)
+                starts.append(start)
             elif token == ')':
                 if len(stack) <= 1:
                     raise ValueError("Unexpected ')'")
                 finished_expr_list = stack.pop()
-                expr_node = Expression(children=finished_expr_list)
-                stack[-1].append(expr_node)
+                expr_start = starts.pop()
+                
+                node = None
+                if finished_expr_list and isinstance(finished_expr_list[0], Operator):
+                    node = finished_expr_list[0]
+                    node.children = finished_expr_list[1:]
+                else:
+                    node = Expression(children=finished_expr_list)
+                
+                node.source_text = original_text[expr_start:end]
+                stack[-1].append(node)
             else:
-                stack[-1].append(self._create_atom(token))
+                atom = self._create_atom(token)
+                atom.source_text = original_text[start:end]
+                stack[-1].append(atom)
         
         if len(stack) != 1:
             raise ValueError("Unclosed '('")
@@ -103,6 +137,10 @@ class Compiler:
             return Not()
         if token == "exists":
             return Exists()
+        if token == "=" :
+            return Eq()
+        if token == "forall" :
+            return ForAll()
 
         try:
             val = float(token)

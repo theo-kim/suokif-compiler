@@ -13,5 +13,8 @@ class SymbolTable:
             self.table[symbol_name] = []
         self.table[symbol_name].append(node)
 
+    def get_references(self, symbol_name: str) -> List[ASTNode]:
+        return self.table.get(symbol_name, [])
+
     def __repr__(self) -> str:
         return f"SymbolTable({list(self.table.keys())})"
